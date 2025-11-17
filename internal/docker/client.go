@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -16,8 +17,31 @@ type Client struct {
 	logger *logger.Logger
 }
 
+// ConnectionConfig holds configuration for Docker connection retries
+type ConnectionConfig struct {
+	MaxRetries     int
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
+	Timeout        time.Duration
+}
+
+// DefaultConnectionConfig returns the default connection configuration
+func DefaultConnectionConfig() ConnectionConfig {
+	return ConnectionConfig{
+		MaxRetries:     5,
+		InitialBackoff: 1 * time.Second,
+		MaxBackoff:     30 * time.Second,
+		Timeout:        10 * time.Second,
+	}
+}
+
 // New creates a new Docker client wrapper
 func New(host string, logger *logger.Logger) (*Client, error) {
+	return NewWithConfig(host, logger, DefaultConnectionConfig())
+}
+
+// NewWithConfig creates a new Docker client wrapper with custom connection config
+func NewWithConfig(host string, logger *logger.Logger, cfg ConnectionConfig) (*Client, error) {
 	var opts []client.Opt
 
 	if host != "" {
@@ -26,15 +50,91 @@ func New(host string, logger *logger.Logger) (*Client, error) {
 
 	opts = append(opts, client.WithAPIVersionNegotiation())
 
-	cli, err := client.New(opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create docker client: %w", err)
+	var cli *client.Client
+	var err error
+	backoff := cfg.InitialBackoff
+
+	// Retry connection with exponential backoff
+	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
+		cli, err = client.New(opts...)
+		if err != nil {
+			if attempt < cfg.MaxRetries {
+				logger.Warn("Failed to create Docker client, retrying",
+					"attempt", attempt+1,
+					"max_retries", cfg.MaxRetries,
+					"backoff", backoff,
+					"error", err)
+				time.Sleep(backoff)
+				backoff *= 2
+				if backoff > cfg.MaxBackoff {
+					backoff = cfg.MaxBackoff
+				}
+				continue
+			}
+			return nil, fmt.Errorf("failed to create docker client after %d attempts: %w", cfg.MaxRetries+1, err)
+		}
+
+		// Validate connection by pinging Docker daemon
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+		pingResult, pingErr := cli.Ping(ctx, client.PingOptions{})
+		cancel()
+
+		if pingErr != nil {
+			cli.Close()
+			if attempt < cfg.MaxRetries {
+				logger.Warn("Failed to ping Docker daemon, retrying",
+					"attempt", attempt+1,
+					"max_retries", cfg.MaxRetries,
+					"backoff", backoff,
+					"error", pingErr)
+				time.Sleep(backoff)
+				backoff *= 2
+				if backoff > cfg.MaxBackoff {
+					backoff = cfg.MaxBackoff
+				}
+				continue
+			}
+			return nil, fmt.Errorf("failed to connect to docker daemon after %d attempts: %w", cfg.MaxRetries+1, pingErr)
+		}
+
+		// Get Docker version information
+		ctx, cancel = context.WithTimeout(context.Background(), cfg.Timeout)
+		versionInfo, versionErr := cli.ServerVersion(ctx, client.ServerVersionOptions{})
+		cancel()
+
+		if versionErr != nil {
+			cli.Close()
+			if attempt < cfg.MaxRetries {
+				logger.Warn("Failed to get Docker version, retrying",
+					"attempt", attempt+1,
+					"max_retries", cfg.MaxRetries,
+					"backoff", backoff,
+					"error", versionErr)
+				time.Sleep(backoff)
+				backoff *= 2
+				if backoff > cfg.MaxBackoff {
+					backoff = cfg.MaxBackoff
+				}
+				continue
+			}
+			return nil, fmt.Errorf("failed to get docker version after %d attempts: %w", cfg.MaxRetries+1, versionErr)
+		}
+
+		// Log successful connection with version info
+		logger.Info("Successfully connected to Docker daemon",
+			"docker_version", versionInfo.Version,
+			"api_version", versionInfo.APIVersion,
+			"os_type", pingResult.OSType,
+			"arch", versionInfo.Arch,
+			"experimental", pingResult.Experimental)
+
+		return &Client{
+			cli:    cli,
+			logger: logger,
+		}, nil
 	}
 
-	return &Client{
-		cli:    cli,
-		logger: logger,
-	}, nil
+	return nil, fmt.Errorf("failed to create docker client after %d attempts: %w", cfg.MaxRetries+1, err)
 }
 
 // Close closes the Docker client connection
@@ -119,7 +219,7 @@ func (c *Client) GetHealthStatus(ctx context.Context, containerNameOrID string) 
 		return "none", nil
 	}
 
-	return info.Container.State.Health.Status, nil
+	return string(info.Container.State.Health.Status), nil
 }
 
 // IsContainerRunning checks if a container is currently running

@@ -84,9 +84,19 @@ func runHelper(cmd *cobra.Command, args []string) error {
 		}
 
 		if startJob.Status == "failed" {
-			log.Error("Start job failed",
-				"error", startJob.Error,
-				"failed", startJob.Failed)
+			totalContainers := len(startJob.Started) + len(startJob.Skipped) + len(startJob.Failed)
+			if len(startJob.Started) == 0 && len(startJob.Skipped) == 0 {
+				log.Error("Start job failed - all containers failed to start",
+					"error", startJob.Error,
+					"failed", startJob.Failed)
+			} else {
+				log.Error("Start job failed - some containers failed to start",
+					"error", startJob.Error,
+					"started", startJob.Started,
+					"skipped", startJob.Skipped,
+					"failed", startJob.Failed,
+					"total", totalContainers)
+			}
 		} else {
 			log.Info("Containers started successfully",
 				"started", startJob.Started,
@@ -127,9 +137,19 @@ func runHelper(cmd *cobra.Command, args []string) error {
 		}
 
 		if stopJob.Status == "failed" {
-			log.Error("Stop job failed",
-				"error", stopJob.Error,
-				"failed", stopJob.Failed)
+			totalContainers := len(stopJob.Stopped) + len(stopJob.Skipped) + len(stopJob.Failed)
+			if len(stopJob.Stopped) == 0 && len(stopJob.Skipped) == 0 {
+				log.Error("Stop job failed - all containers failed to stop",
+					"error", stopJob.Error,
+					"failed", stopJob.Failed)
+			} else {
+				log.Error("Stop job failed - some containers failed to stop",
+					"error", stopJob.Error,
+					"stopped", stopJob.Stopped,
+					"skipped", stopJob.Skipped,
+					"failed", stopJob.Failed,
+					"total", totalContainers)
+			}
 		} else {
 			log.Info("Containers stopped successfully",
 				"stopped", stopJob.Stopped,

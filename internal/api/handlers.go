@@ -16,12 +16,12 @@ import (
 
 // Server represents the API server
 type Server struct {
-	jobManager      *jobs.Manager
-	logger          *logger.Logger
-	isBlocked       bool
-	blockMutex      sync.RWMutex
-	unblockTimer    *time.Timer
-	unblockCancel   context.CancelFunc
+	jobManager    *jobs.Manager
+	logger        *logger.Logger
+	isBlocked     bool
+	blockMutex    sync.RWMutex
+	unblockTimer  *time.Timer
+	unblockCancel context.CancelFunc
 }
 
 // NewServer creates a new API server

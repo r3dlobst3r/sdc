@@ -5,8 +5,8 @@ go 1.25.3
 require (
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/google/uuid v1.6.0
-	github.com/moby/moby/api v1.52.0-rc.1
-	github.com/moby/moby/client v0.1.0-rc.1
+	github.com/moby/moby/api v1.52.0
+	github.com/moby/moby/client v0.1.0
 	github.com/spf13/cobra v1.10.1
 	github.com/stretchr/testify v1.11.1
 )

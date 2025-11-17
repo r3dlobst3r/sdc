@@ -14,10 +14,10 @@ import (
 
 // Client represents an HTTP client for communicating with the controller server
 type Client struct {
-	baseURL   string
+	baseURL    string
 	httpClient *http.Client
-	logger    *logger.Logger
-	userAgent string
+	logger     *logger.Logger
+	userAgent  string
 }
 
 // NewClient creates a new controller client

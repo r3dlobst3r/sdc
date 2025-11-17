@@ -228,13 +228,31 @@ func (m *Manager) processStartJob(ctx context.Context, job *Job) {
 	}
 
 	job.SetResults(result.Started, nil, result.Skipped, result.Failed)
-	job.SetStatus(JobStatusCompleted)
 
-	m.logger.Info("Start job completed",
-		"job_id", job.ID,
-		"started", len(result.Started),
-		"skipped", len(result.Skipped),
-		"failed", len(result.Failed))
+	// If any containers failed, mark job as failed
+	if len(result.Failed) > 0 {
+		job.SetStatus(JobStatusFailed)
+		if len(result.Started) == 0 && len(result.Skipped) == 0 {
+			m.logger.Error("Start job failed - all containers failed to start",
+				"job_id", job.ID,
+				"failed", len(result.Failed))
+		} else {
+			totalContainers := len(result.Started) + len(result.Skipped) + len(result.Failed)
+			m.logger.Error("Start job failed - some containers failed to start",
+				"job_id", job.ID,
+				"started", len(result.Started),
+				"skipped", len(result.Skipped),
+				"failed", len(result.Failed),
+				"total", totalContainers)
+		}
+	} else {
+		job.SetStatus(JobStatusCompleted)
+		m.logger.Info("Start job completed",
+			"job_id", job.ID,
+			"started", len(result.Started),
+			"skipped", len(result.Skipped),
+			"failed", len(result.Failed))
+	}
 }
 
 // processStopJob handles container stop operations
@@ -258,13 +276,31 @@ func (m *Manager) processStopJob(ctx context.Context, job *Job) {
 	}
 
 	job.SetResults(nil, result.Stopped, result.Skipped, result.Failed)
-	job.SetStatus(JobStatusCompleted)
 
-	m.logger.Info("Stop job completed",
-		"job_id", job.ID,
-		"stopped", len(result.Stopped),
-		"skipped", len(result.Skipped),
-		"failed", len(result.Failed))
+	// If any containers failed, mark job as failed
+	if len(result.Failed) > 0 {
+		job.SetStatus(JobStatusFailed)
+		if len(result.Stopped) == 0 && len(result.Skipped) == 0 {
+			m.logger.Error("Stop job failed - all containers failed to stop",
+				"job_id", job.ID,
+				"failed", len(result.Failed))
+		} else {
+			totalContainers := len(result.Stopped) + len(result.Skipped) + len(result.Failed)
+			m.logger.Error("Stop job failed - some containers failed to stop",
+				"job_id", job.ID,
+				"stopped", len(result.Stopped),
+				"skipped", len(result.Skipped),
+				"failed", len(result.Failed),
+				"total", totalContainers)
+		}
+	} else {
+		job.SetStatus(JobStatusCompleted)
+		m.logger.Info("Stop job completed",
+			"job_id", job.ID,
+			"stopped", len(result.Stopped),
+			"skipped", len(result.Skipped),
+			"failed", len(result.Failed))
+	}
 }
 
 // cleanupLoop periodically cleans up old jobs
@@ -333,7 +369,7 @@ func (m *Manager) cleanup() {
 		toRemove := min(totalJobs-MaxJobCount, len(eligible))
 
 		removed := 0
-		for i := 0; i < toRemove; i++ {
+		for i := range toRemove {
 			delete(m.jobs, eligible[i].id)
 			removed++
 		}
