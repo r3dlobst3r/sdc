@@ -101,15 +101,6 @@ sdc/
 5. **Health checking**: Polls container health status before proceeding to dependents
 6. **Job tracking**: All operations are tracked as jobs with UUID and status
 
-## Dependencies
-
-- `github.com/moby/moby/client` v0.1.0-rc.1 - Docker client SDK
-- `github.com/moby/moby/api` v1.52.0-rc.1 - Docker API types
-- `github.com/go-chi/chi/v5` v5.2.3 - HTTP router
-- `github.com/spf13/cobra` v1.10.1 - CLI framework
-- `github.com/google/uuid` v1.6.0 - UUID generation
-- `github.com/stretchr/testify` v1.11.1 - Testing utilities
-
 ## Docker Labels
 
 Saltbox Docker Controller uses Saltbox Docker labels to define container management and dependencies:
