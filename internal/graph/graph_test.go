@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/moby/moby/api/types/container"
@@ -36,14 +37,14 @@ func createTestContainer(name string, managed bool, dependencies []string, delay
 	}
 
 	if len(dependencies) > 0 {
-		depStr := ""
+		var depStr strings.Builder
 		for i, dep := range dependencies {
 			if i > 0 {
-				depStr += ","
+				depStr.WriteString(",")
 			}
-			depStr += dep
+			depStr.WriteString(dep)
 		}
-		labels["com.github.saltbox.depends_on"] = depStr
+		labels["com.github.saltbox.depends_on"] = depStr.String()
 	}
 
 	if delay > 0 {

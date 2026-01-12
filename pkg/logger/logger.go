@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 )
 
 // Logger wraps stdlib log.Logger with convenience methods
@@ -49,17 +50,18 @@ func formatFields(keysAndValues ...any) string {
 		return ""
 	}
 
-	result := " ["
+	var result strings.Builder
+	result.WriteString(" [")
 	for i := 0; i < len(keysAndValues); i += 2 {
 		if i > 0 {
-			result += ", "
+			result.WriteString(", ")
 		}
 		if i+1 < len(keysAndValues) {
-			result += formatField(keysAndValues[i], keysAndValues[i+1])
+			result.WriteString(formatField(keysAndValues[i], keysAndValues[i+1]))
 		}
 	}
-	result += "]"
-	return result
+	result.WriteString("]")
+	return result.String()
 }
 
 func formatField(key, value any) string {

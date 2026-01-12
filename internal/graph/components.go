@@ -13,17 +13,13 @@ type ComponentBatches struct {
 // Returns a slice of components, where each component contains batches of nodes.
 // Nodes within the same batch have no dependencies on each other and can run in parallel.
 func (g *Graph) GetConnectedComponents() ([]*ComponentBatches, error) {
-	// Reset visited flags
-	for _, node := range g.Nodes {
-		node.visited = false
-	}
-
+	visited := make(map[*Node]bool)
 	var components []*ComponentBatches
 
 	// Find all components using DFS
 	for _, node := range g.Nodes {
-		if !node.visited && !node.IsPlaceholder {
-			component := g.findComponent(node)
+		if !node.IsPlaceholder && !visited[node] {
+			component := g.findComponent(node, visited)
 			if len(component) > 0 {
 				// Get batches for this component
 				batches, err := g.getBatchesForComponent(component)
@@ -39,7 +35,7 @@ func (g *Graph) GetConnectedComponents() ([]*ComponentBatches, error) {
 }
 
 // findComponent performs DFS to find all nodes connected to the starting node
-func (g *Graph) findComponent(start *Node) []*Node {
+func (g *Graph) findComponent(start *Node, visited map[*Node]bool) []*Node {
 	var component []*Node
 	var stack []*Node
 	stack = append(stack, start)
@@ -49,21 +45,21 @@ func (g *Graph) findComponent(start *Node) []*Node {
 		node := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 
-		if node.visited || node.IsPlaceholder {
+		if visited[node] || node.IsPlaceholder {
 			continue
 		}
 
-		node.visited = true
+		visited[node] = true
 		component = append(component, node)
 
 		// Add all connected nodes (parents and children) to stack
 		for _, parent := range node.Parents {
-			if !parent.visited && !parent.IsPlaceholder {
+			if !parent.IsPlaceholder && !visited[parent] {
 				stack = append(stack, parent)
 			}
 		}
 		for _, child := range node.Children {
-			if !child.visited && !child.IsPlaceholder {
+			if !child.IsPlaceholder && !visited[child] {
 				stack = append(stack, child)
 			}
 		}

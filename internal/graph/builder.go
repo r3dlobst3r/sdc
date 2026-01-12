@@ -74,9 +74,10 @@ func (b *Builder) Build(ctx context.Context, containers []container.Summary) (*G
 
 	// Second pass: Build dependency relationships
 	for _, c := range containers {
-		name := c.Names[0]
-		if len(name) > 0 && name[0] == '/' {
-			name = name[1:]
+		name := containerName(c)
+		if name == "" {
+			b.logger.Warn("Skipping container with no name or ID")
+			continue
 		}
 
 		node, exists := graph.Nodes[name]

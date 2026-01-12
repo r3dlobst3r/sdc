@@ -121,6 +121,10 @@ func (c *Client) GetJob(ctx context.Context, jobID string) (*Job, error) {
 
 // WaitForJob waits for a job to complete (completed or failed status)
 func (c *Client) WaitForJob(ctx context.Context, jobID string, pollInterval time.Duration) (*Job, error) {
+	if pollInterval <= 0 {
+		return nil, fmt.Errorf("poll interval must be greater than 0")
+	}
+
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 

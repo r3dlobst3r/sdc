@@ -2,8 +2,11 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/saltyorg/sdc/internal/orchestrator"
@@ -24,6 +27,8 @@ const (
 	CleanupInterval = 5 * time.Minute
 )
 
+var ErrQueueFull = errors.New("job queue is full")
+
 // Manager manages job lifecycle and execution
 type Manager struct {
 	orchestrator *orchestrator.Orchestrator
@@ -36,7 +41,9 @@ type Manager struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
+	submitWg  sync.WaitGroup
 	cleanupWg sync.WaitGroup
+	closing   atomic.Bool
 }
 
 // NewManager creates a new job manager
@@ -79,6 +86,11 @@ func (m *Manager) Shutdown(timeout time.Duration) error {
 	m.logger.Info("Shutting down job manager")
 
 	// Stop accepting new jobs
+	m.closing.Store(true)
+
+	// Wait for in-flight submissions to finish before closing the queue
+	m.submitWg.Wait()
+
 	close(m.jobQueue)
 
 	// Cancel context to stop cleanup loop
@@ -106,6 +118,17 @@ func (m *Manager) Shutdown(timeout time.Duration) error {
 
 // Submit submits a new job for execution
 func (m *Manager) Submit(job *Job) error {
+	if m.closing.Load() {
+		return fmt.Errorf("job manager is shutting down")
+	}
+
+	m.submitWg.Add(1)
+	defer m.submitWg.Done()
+
+	if m.closing.Load() {
+		return fmt.Errorf("job manager is shutting down")
+	}
+
 	// Check if shutting down first
 	select {
 	case <-m.ctx.Done():
@@ -125,7 +148,15 @@ func (m *Manager) Submit(job *Job) error {
 	case m.jobQueue <- job:
 		return nil
 	case <-m.ctx.Done():
+		m.jobsMu.Lock()
+		delete(m.jobs, job.ID)
+		m.jobsMu.Unlock()
 		return fmt.Errorf("job manager is shutting down")
+	default:
+		m.jobsMu.Lock()
+		delete(m.jobs, job.ID)
+		m.jobsMu.Unlock()
+		return ErrQueueFull
 	}
 }
 
@@ -335,17 +366,21 @@ func (m *Manager) cleanup() {
 
 	// Collect jobs eligible for cleanup (completed/failed and older than MinJobRetention)
 	type jobAge struct {
-		id  string
-		age time.Duration
+		id     string
+		age    time.Duration
+		status JobStatus
 	}
 
 	var eligible []jobAge
+	var allJobs []jobAge
 	for id, job := range m.jobs {
 		status := job.GetStatus()
+		age := now.Sub(job.CreatedAt)
+		allJobs = append(allJobs, jobAge{id: id, age: age, status: status})
+
 		if status == JobStatusCompleted || status == JobStatusFailed {
-			age := now.Sub(job.CreatedAt)
 			if age > MinJobRetention {
-				eligible = append(eligible, jobAge{id: id, age: age})
+				eligible = append(eligible, jobAge{id: id, age: age, status: status})
 			}
 		}
 	}
@@ -354,32 +389,49 @@ func (m *Manager) cleanup() {
 		return
 	}
 
-	// If we're over the max count, sort by age and remove oldest
+	removed := 0
+	removedIDs := make(map[string]struct{})
+
+	// If we're over the max count, remove oldest jobs to enforce MaxJobCount
 	if totalJobs > MaxJobCount {
-		// Sort eligible by age (oldest first)
-		for i := 0; i < len(eligible); i++ {
-			for j := i + 1; j < len(eligible); j++ {
-				if eligible[j].age > eligible[i].age {
-					eligible[i], eligible[j] = eligible[j], eligible[i]
+		sort.Slice(eligible, func(i, j int) bool {
+			return eligible[i].age > eligible[j].age
+		})
+
+		toRemove := totalJobs - MaxJobCount
+		for _, job := range eligible {
+			if toRemove == 0 {
+				break
+			}
+			delete(m.jobs, job.id)
+			removedIDs[job.id] = struct{}{}
+			removed++
+			toRemove--
+		}
+
+		if toRemove > 0 {
+			sort.Slice(allJobs, func(i, j int) bool {
+				return allJobs[i].age > allJobs[j].age
+			})
+
+			for _, job := range allJobs {
+				if toRemove == 0 {
+					break
 				}
+				if _, alreadyRemoved := removedIDs[job.id]; alreadyRemoved {
+					continue
+				}
+				delete(m.jobs, job.id)
+				removed++
+				toRemove--
 			}
 		}
 
-		// Remove enough jobs to get under MaxJobCount
-		toRemove := min(totalJobs-MaxJobCount, len(eligible))
-
-		removed := 0
-		for i := range toRemove {
-			delete(m.jobs, eligible[i].id)
-			removed++
-		}
-
-		m.logger.Info("Cleaned up old jobs (LRU eviction)",
+		m.logger.Info("Cleaned up old jobs (count-based)",
 			"removed", removed,
 			"remaining", len(m.jobs))
 	} else if len(eligible) > 0 {
 		// Remove old eligible jobs even if under MaxJobCount
-		removed := 0
 		for _, job := range eligible {
 			delete(m.jobs, job.id)
 			removed++

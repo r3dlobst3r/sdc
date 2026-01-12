@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,7 +22,6 @@ type Server struct {
 	logger        *logger.Logger
 	isBlocked     bool
 	blockMutex    sync.RWMutex
-	unblockTimer  *time.Timer
 	unblockCancel context.CancelFunc
 }
 
@@ -46,6 +47,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/ping", s.HandleHealth)
 
 	// Block/unblock routes
+	r.Post("/block", s.HandleBlock)
 	r.Post("/block/{duration}", s.HandleBlock)
 	r.Post("/unblock", s.HandleUnblock)
 
@@ -65,6 +67,28 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+type jobRequest struct {
+	Timeout *int     `json:"timeout"`
+	Ignore  []string `json:"ignore"`
+}
+
+func parseJobRequest(r *http.Request) (*jobRequest, error) {
+	if r.Body == nil {
+		return &jobRequest{}, nil
+	}
+
+	var req jobRequest
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		if errors.Is(err, io.EOF) {
+			return &jobRequest{}, nil
+		}
+		return nil, err
+	}
+
+	return &req, nil
+}
+
 // HandleStartContainers handles POST /start
 func (s *Server) HandleStartContainers(w http.ResponseWriter, r *http.Request) {
 	// Check if operations are blocked
@@ -77,8 +101,24 @@ func (s *Server) HandleStartContainers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse query parameters
+	// Parse JSON body if provided
 	timeout := 600 // 10 minutes default
+	var ignore []string
+
+	bodyReq, err := parseJobRequest(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if bodyReq.Timeout != nil {
+		timeout = *bodyReq.Timeout
+	}
+	if len(bodyReq.Ignore) > 0 {
+		ignore = append(ignore, bodyReq.Ignore...)
+	}
+
+	// Parse query parameters
 	if timeoutStr := r.URL.Query().Get("timeout"); timeoutStr != "" {
 		if parsedTimeout, err := strconv.Atoi(timeoutStr); err == nil {
 			timeout = parsedTimeout
@@ -86,8 +126,12 @@ func (s *Server) HandleStartContainers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create and submit job
-	job := jobs.NewJob(jobs.JobTypeStart, timeout, nil)
+	job := jobs.NewJob(jobs.JobTypeStart, timeout, ignore)
 	if err := s.jobManager.Submit(job); err != nil {
+		if errors.Is(err, jobs.ErrQueueFull) {
+			s.writeError(w, http.StatusServiceUnavailable, "Job queue is full")
+			return
+		}
 		s.logger.Error("Failed to submit job", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "Failed to submit job")
 		return
@@ -114,8 +158,24 @@ func (s *Server) HandleStopContainers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse timeout query parameter
+	// Parse JSON body if provided
 	timeout := 300 // 5 minutes default
+	var ignore []string
+
+	bodyReq, err := parseJobRequest(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if bodyReq.Timeout != nil {
+		timeout = *bodyReq.Timeout
+	}
+	if len(bodyReq.Ignore) > 0 {
+		ignore = append(ignore, bodyReq.Ignore...)
+	}
+
+	// Parse timeout query parameter
 	if timeoutStr := r.URL.Query().Get("timeout"); timeoutStr != "" {
 		if parsedTimeout, err := strconv.Atoi(timeoutStr); err == nil {
 			timeout = parsedTimeout
@@ -123,7 +183,6 @@ func (s *Server) HandleStopContainers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse ignore query parameter (supports both comma-separated and repeated params)
-	var ignore []string
 	query := r.URL.Query()
 
 	// Handle repeated params: ?ignore=traefik&ignore=nginx
@@ -142,6 +201,10 @@ func (s *Server) HandleStopContainers(w http.ResponseWriter, r *http.Request) {
 	// Create and submit job
 	job := jobs.NewJob(jobs.JobTypeStop, timeout, ignore)
 	if err := s.jobManager.Submit(job); err != nil {
+		if errors.Is(err, jobs.ErrQueueFull) {
+			s.writeError(w, http.StatusServiceUnavailable, "Job queue is full")
+			return
+		}
 		s.logger.Error("Failed to submit job", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "Failed to submit job")
 		return
@@ -173,7 +236,7 @@ func (s *Server) HandleGetJobStatus(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, job)
 }
 
-// HandleHealth handles GET /health
+// HandleHealth handles GET /ping
 func (s *Server) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]string{
 		"status": "healthy",
@@ -186,7 +249,7 @@ func (s *Server) HandleBlock(w http.ResponseWriter, r *http.Request) {
 	durationStr := chi.URLParam(r, "duration")
 	duration := 10 // Default 10 minutes
 	if durationStr != "" {
-		if parsedDuration, err := strconv.Atoi(durationStr); err == nil {
+		if parsedDuration, err := strconv.Atoi(durationStr); err == nil && parsedDuration > 0 {
 			duration = parsedDuration
 		}
 	}

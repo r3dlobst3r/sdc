@@ -43,10 +43,7 @@ type SortedContainers struct {
 
 // NewNode creates a new graph node from container information
 func NewNode(summary container.Summary) *Node {
-	name := summary.Names[0]
-	if len(name) > 0 && name[0] == '/' {
-		name = name[1:] // Remove leading slash from container name
-	}
+	name := containerName(summary)
 
 	return &Node{
 		ID:                 summary.ID,
@@ -62,6 +59,23 @@ func NewNode(summary container.Summary) *Node {
 		inStack:            false,
 		sortIndex:          -1,
 	}
+}
+
+func containerName(summary container.Summary) string {
+	for _, name := range summary.Names {
+		if len(name) > 0 && name[0] == '/' {
+			name = name[1:]
+		}
+		if name != "" {
+			return name
+		}
+	}
+
+	if summary.ID != "" {
+		return summary.ID
+	}
+
+	return ""
 }
 
 // NewPlaceholderNode creates a placeholder node for a missing dependency

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/saltyorg/sdc/internal/docker"
@@ -12,17 +13,21 @@ import (
 
 // Orchestrator manages container lifecycle operations with dependency awareness
 type Orchestrator struct {
-	docker  *docker.Client
-	builder *graph.Builder
-	logger  *logger.Logger
+	docker      *docker.Client
+	builder     *graph.Builder
+	logger      *logger.Logger
+	maxParallel int
 }
 
 // New creates a new orchestrator instance
 func New(dockerClient *docker.Client, logger *logger.Logger) *Orchestrator {
+	parallel := max(runtime.GOMAXPROCS(0), 1)
+
 	return &Orchestrator{
-		docker:  dockerClient,
-		builder: graph.NewBuilder(dockerClient, logger),
-		logger:  logger,
+		docker:      dockerClient,
+		builder:     graph.NewBuilder(dockerClient, logger),
+		logger:      logger,
+		maxParallel: parallel,
 	}
 }
 
@@ -63,7 +68,7 @@ func (o *Orchestrator) StartContainers(ctx context.Context, opts StartContainers
 	defer cancel()
 
 	// List all containers
-	containers, err := o.docker.ListManagedContainers(ctx)
+	containers, err := o.docker.ListManagedContainers(timeoutCtx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
@@ -71,7 +76,7 @@ func (o *Orchestrator) StartContainers(ctx context.Context, opts StartContainers
 	o.logger.Info("Found managed containers", "count", len(containers))
 
 	// Build dependency graph
-	g, err := o.builder.Build(ctx, containers)
+	g, err := o.builder.Build(timeoutCtx, containers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build dependency graph: %w", err)
 	}
@@ -91,7 +96,12 @@ func (o *Orchestrator) StartContainers(ctx context.Context, opts StartContainers
 		ignoreMap[name] = true
 	}
 
-	// Process each component in parallel using goroutines
+	// Process components with bounded parallelism
+	type componentWork struct {
+		idx  int
+		comp *graph.ComponentBatches
+	}
+
 	type componentResult struct {
 		started []string
 		skipped []string
@@ -99,86 +109,113 @@ func (o *Orchestrator) StartContainers(ctx context.Context, opts StartContainers
 	}
 
 	resultChan := make(chan componentResult, len(components))
+	workChan := make(chan componentWork)
+
+	workerCount := min(len(components), o.maxParallel)
+	for range workerCount {
+		go func() {
+			for work := range workChan {
+				compIndex := work.idx
+				comp := work.comp
+
+				compResult := componentResult{
+					started: []string{},
+					skipped: []string{},
+					failed:  []string{},
+				}
+
+				// Get container names for this component
+				var containerNames []string
+				for _, batch := range comp.Batches {
+					for _, node := range batch {
+						containerNames = append(containerNames, node.Name)
+					}
+				}
+
+				// Only log multi-container components at INFO level
+				if len(containerNames) > 1 {
+					o.logger.Info("Processing component",
+						"containers", containerNames,
+						"batch_count", len(comp.Batches))
+				} else {
+					o.logger.Debug("Processing component",
+						"containers", containerNames,
+						"batch_count", len(comp.Batches))
+				}
+
+				// Process batches sequentially (respecting dependencies between batches)
+				for batchIdx, batch := range comp.Batches {
+					if len(batch) == 0 {
+						continue
+					}
+
+					batchIndex := batchIdx
+					o.logger.Debug("Processing batch within component",
+						"component", compIndex,
+						"batch", batchIndex,
+						"containers", len(batch))
+
+					// Process containers in this batch with bounded parallelism
+					type batchResult struct {
+						started []string
+						skipped []string
+						failed  []string
+					}
+
+					jobChan := make(chan *graph.Node)
+					batchChan := make(chan batchResult, len(batch))
+
+					batchWorkers := min(len(batch), o.maxParallel)
+					for range batchWorkers {
+						go func() {
+							for n := range jobChan {
+								br := batchResult{
+									started: []string{},
+									skipped: []string{},
+									failed:  []string{},
+								}
+
+								if ignoreMap[n.Name] {
+									br.skipped = append(br.skipped, n.Name)
+								} else if err := o.startContainer(timeoutCtx, n); err != nil {
+									o.logger.Error("Failed to start container",
+										"container", n.Name,
+										"component", compIndex,
+										"batch", batchIndex,
+										"error", err)
+									br.failed = append(br.failed, n.Name)
+								} else {
+									br.started = append(br.started, n.Name)
+								}
+
+								batchChan <- br
+							}
+						}()
+					}
+
+					for _, node := range batch {
+						jobChan <- node
+					}
+					close(jobChan)
+
+					// Collect results from this batch
+					for range batch {
+						br := <-batchChan
+						compResult.started = append(compResult.started, br.started...)
+						compResult.skipped = append(compResult.skipped, br.skipped...)
+						compResult.failed = append(compResult.failed, br.failed...)
+					}
+				}
+
+				resultChan <- compResult
+			}
+		}()
+	}
 
 	for componentIdx, component := range components {
-		go func(idx int, comp *graph.ComponentBatches) {
-			compResult := componentResult{
-				started: []string{},
-				skipped: []string{},
-				failed:  []string{},
-			}
-
-			// Get container names for this component
-			var containerNames []string
-			for _, batch := range comp.Batches {
-				for _, node := range batch {
-					containerNames = append(containerNames, node.Name)
-				}
-			}
-
-			// Only log multi-container components at INFO level
-			if len(containerNames) > 1 {
-				o.logger.Info("Processing component",
-					"containers", containerNames,
-					"batch_count", len(comp.Batches))
-			} else {
-				o.logger.Debug("Processing component",
-					"containers", containerNames,
-					"batch_count", len(comp.Batches))
-			}
-
-			// Process batches sequentially (respecting dependencies between batches)
-			for batchIdx, batch := range comp.Batches {
-				o.logger.Debug("Processing batch within component",
-					"component", idx,
-					"batch", batchIdx,
-					"containers", len(batch))
-
-				// Process containers in this batch in parallel
-				type batchResult struct {
-					started []string
-					skipped []string
-					failed  []string
-				}
-				batchChan := make(chan batchResult, len(batch))
-
-				for _, node := range batch {
-					go func(n *graph.Node) {
-						br := batchResult{
-							started: []string{},
-							skipped: []string{},
-							failed:  []string{},
-						}
-
-						if ignoreMap[n.Name] {
-							br.skipped = append(br.skipped, n.Name)
-						} else if err := o.startContainer(timeoutCtx, n); err != nil {
-							o.logger.Error("Failed to start container",
-								"container", n.Name,
-								"component", idx,
-								"batch", batchIdx,
-								"error", err)
-							br.failed = append(br.failed, n.Name)
-						} else {
-							br.started = append(br.started, n.Name)
-						}
-
-						batchChan <- br
-					}(node)
-				}
-
-				// Collect results from this batch
-				for range batch {
-					br := <-batchChan
-					compResult.started = append(compResult.started, br.started...)
-					compResult.skipped = append(compResult.skipped, br.skipped...)
-					compResult.failed = append(compResult.failed, br.failed...)
-				}
-			}
-
-			resultChan <- compResult
-		}(componentIdx, component)
+		workChan <- componentWork{idx: componentIdx, comp: component}
 	}
+	close(workChan)
 
 	// Collect results from all components
 	result := &StartResult{
@@ -213,7 +250,7 @@ func (o *Orchestrator) StopContainers(ctx context.Context, opts StopContainersOp
 	defer cancel()
 
 	// List all containers
-	containers, err := o.docker.ListManagedContainers(ctx)
+	containers, err := o.docker.ListManagedContainers(timeoutCtx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
@@ -221,7 +258,7 @@ func (o *Orchestrator) StopContainers(ctx context.Context, opts StopContainersOp
 	o.logger.Info("Found managed containers", "count", len(containers))
 
 	// Build dependency graph
-	g, err := o.builder.Build(ctx, containers)
+	g, err := o.builder.Build(timeoutCtx, containers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build dependency graph: %w", err)
 	}
@@ -241,7 +278,12 @@ func (o *Orchestrator) StopContainers(ctx context.Context, opts StopContainersOp
 		ignoreMap[name] = true
 	}
 
-	// Process each component in parallel using goroutines
+	// Process components with bounded parallelism
+	type componentWork struct {
+		idx  int
+		comp *graph.ComponentBatches
+	}
+
 	type componentResult struct {
 		stopped []string
 		skipped []string
@@ -249,86 +291,113 @@ func (o *Orchestrator) StopContainers(ctx context.Context, opts StopContainersOp
 	}
 
 	resultChan := make(chan componentResult, len(components))
+	workChan := make(chan componentWork)
+
+	workerCount := min(len(components), o.maxParallel)
+	for range workerCount {
+		go func() {
+			for work := range workChan {
+				compIndex := work.idx
+				comp := work.comp
+
+				compResult := componentResult{
+					stopped: []string{},
+					skipped: []string{},
+					failed:  []string{},
+				}
+
+				// Get container names for this component
+				var containerNames []string
+				for _, batch := range comp.Batches {
+					for _, node := range batch {
+						containerNames = append(containerNames, node.Name)
+					}
+				}
+
+				// Only log multi-container components at INFO level
+				if len(containerNames) > 1 {
+					o.logger.Info("Processing shutdown component",
+						"containers", containerNames,
+						"batch_count", len(comp.Batches))
+				} else {
+					o.logger.Debug("Processing shutdown component",
+						"containers", containerNames,
+						"batch_count", len(comp.Batches))
+				}
+
+				// Process batches sequentially (respecting dependencies between batches)
+				for batchIdx, batch := range comp.Batches {
+					if len(batch) == 0 {
+						continue
+					}
+
+					batchIndex := batchIdx
+					o.logger.Debug("Processing batch within component",
+						"component", compIndex,
+						"batch", batchIndex,
+						"containers", len(batch))
+
+					// Process containers in this batch with bounded parallelism
+					type batchResult struct {
+						stopped []string
+						skipped []string
+						failed  []string
+					}
+
+					jobChan := make(chan *graph.Node)
+					batchChan := make(chan batchResult, len(batch))
+
+					batchWorkers := min(len(batch), o.maxParallel)
+					for range batchWorkers {
+						go func() {
+							for n := range jobChan {
+								br := batchResult{
+									stopped: []string{},
+									skipped: []string{},
+									failed:  []string{},
+								}
+
+								if ignoreMap[n.Name] {
+									br.skipped = append(br.skipped, n.Name)
+								} else if err := o.stopContainer(timeoutCtx, n); err != nil {
+									o.logger.Error("Failed to stop container",
+										"container", n.Name,
+										"component", compIndex,
+										"batch", batchIndex,
+										"error", err)
+									br.failed = append(br.failed, n.Name)
+								} else {
+									br.stopped = append(br.stopped, n.Name)
+								}
+
+								batchChan <- br
+							}
+						}()
+					}
+
+					for _, node := range batch {
+						jobChan <- node
+					}
+					close(jobChan)
+
+					// Collect results from this batch
+					for range batch {
+						br := <-batchChan
+						compResult.stopped = append(compResult.stopped, br.stopped...)
+						compResult.skipped = append(compResult.skipped, br.skipped...)
+						compResult.failed = append(compResult.failed, br.failed...)
+					}
+				}
+
+				resultChan <- compResult
+			}
+		}()
+	}
 
 	for componentIdx, component := range components {
-		go func(idx int, comp *graph.ComponentBatches) {
-			compResult := componentResult{
-				stopped: []string{},
-				skipped: []string{},
-				failed:  []string{},
-			}
-
-			// Get container names for this component
-			var containerNames []string
-			for _, batch := range comp.Batches {
-				for _, node := range batch {
-					containerNames = append(containerNames, node.Name)
-				}
-			}
-
-			// Only log multi-container components at INFO level
-			if len(containerNames) > 1 {
-				o.logger.Info("Processing shutdown component",
-					"containers", containerNames,
-					"batch_count", len(comp.Batches))
-			} else {
-				o.logger.Debug("Processing shutdown component",
-					"containers", containerNames,
-					"batch_count", len(comp.Batches))
-			}
-
-			// Process batches sequentially (respecting dependencies between batches)
-			for batchIdx, batch := range comp.Batches {
-				o.logger.Debug("Processing batch within component",
-					"component", idx,
-					"batch", batchIdx,
-					"containers", len(batch))
-
-				// Process containers in this batch in parallel
-				type batchResult struct {
-					stopped []string
-					skipped []string
-					failed  []string
-				}
-				batchChan := make(chan batchResult, len(batch))
-
-				for _, node := range batch {
-					go func(n *graph.Node) {
-						br := batchResult{
-							stopped: []string{},
-							skipped: []string{},
-							failed:  []string{},
-						}
-
-						if ignoreMap[n.Name] {
-							br.skipped = append(br.skipped, n.Name)
-						} else if err := o.stopContainer(timeoutCtx, n); err != nil {
-							o.logger.Error("Failed to stop container",
-								"container", n.Name,
-								"component", idx,
-								"batch", batchIdx,
-								"error", err)
-							br.failed = append(br.failed, n.Name)
-						} else {
-							br.stopped = append(br.stopped, n.Name)
-						}
-
-						batchChan <- br
-					}(node)
-				}
-
-				// Collect results from this batch
-				for range batch {
-					br := <-batchChan
-					compResult.stopped = append(compResult.stopped, br.stopped...)
-					compResult.skipped = append(compResult.skipped, br.skipped...)
-					compResult.failed = append(compResult.failed, br.failed...)
-				}
-			}
-
-			resultChan <- compResult
-		}(componentIdx, component)
+		workChan <- componentWork{idx: componentIdx, comp: component}
 	}
+	close(workChan)
 
 	// Collect results from all components
 	result := &StopResult{
