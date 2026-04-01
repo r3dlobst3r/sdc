@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/saltyorg/sdc/pkg/logger"
+	"github.com/r3dlobst3r/sdc/pkg/logger"
 )
 
 // Client represents an HTTP client for communicating with the controller server

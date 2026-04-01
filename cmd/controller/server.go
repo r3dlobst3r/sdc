@@ -9,12 +9,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/saltyorg/sdc/internal/api"
-	"github.com/saltyorg/sdc/internal/config"
-	"github.com/saltyorg/sdc/internal/docker"
-	"github.com/saltyorg/sdc/internal/jobs"
-	"github.com/saltyorg/sdc/internal/orchestrator"
-	"github.com/saltyorg/sdc/pkg/logger"
+	"github.com/r3dlobst3r/sdc/internal/api"
+	"github.com/r3dlobst3r/sdc/internal/config"
+	"github.com/r3dlobst3r/sdc/internal/docker"
+	"github.com/r3dlobst3r/sdc/internal/jobs"
+	"github.com/r3dlobst3r/sdc/internal/orchestrator"
+	"github.com/r3dlobst3r/sdc/pkg/logger"
 	"github.com/spf13/cobra"
 )
 

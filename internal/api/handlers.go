@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/saltyorg/sdc/internal/jobs"
-	"github.com/saltyorg/sdc/pkg/logger"
+	"github.com/r3dlobst3r/sdc/internal/jobs"
+	"github.com/r3dlobst3r/sdc/pkg/logger"
 )
 
 // Server represents the API server

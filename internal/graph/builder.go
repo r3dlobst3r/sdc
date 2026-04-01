@@ -7,8 +7,8 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
-	"github.com/saltyorg/sdc/internal/docker"
-	"github.com/saltyorg/sdc/pkg/logger"
+	"github.com/r3dlobst3r/sdc/internal/docker"
+	"github.com/r3dlobst3r/sdc/pkg/logger"
 )
 
 // Builder constructs dependency graphs from container information

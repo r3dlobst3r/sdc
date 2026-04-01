@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/saltyorg/sdc/internal/client"
-	"github.com/saltyorg/sdc/internal/config"
-	"github.com/saltyorg/sdc/pkg/logger"
+	"github.com/r3dlobst3r/sdc/internal/client"
+	"github.com/r3dlobst3r/sdc/internal/config"
+	"github.com/r3dlobst3r/sdc/pkg/logger"
 	"github.com/spf13/cobra"
 )
 

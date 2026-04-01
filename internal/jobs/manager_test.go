@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/saltyorg/sdc/internal/docker"
-	"github.com/saltyorg/sdc/internal/orchestrator"
-	"github.com/saltyorg/sdc/pkg/logger"
+	"github.com/r3dlobst3r/sdc/internal/docker"
+	"github.com/r3dlobst3r/sdc/internal/orchestrator"
+	"github.com/r3dlobst3r/sdc/pkg/logger"
 	"github.com/stretchr/testify/assert"
 )
 

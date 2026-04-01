@@ -12,7 +12,7 @@ permissions:
 
 env:
   APP_NAME: 'sdc'
-  GITHUB_REPO: 'github.com/saltyorg/sdc'
+  GITHUB_REPO: 'github.com/r3dlobst3r/sdc'
 
 jobs:
   prepare:
@@ -174,7 +174,7 @@ jobs:
 
           echo "" >> release_notes.md
           echo "" >> release_notes.md
-          echo "**Full Changelog**: https://github.com/saltyorg/sdc/compare/$PREVIOUS_TAG...${{ needs.prepare.outputs.version }}" >> release_notes.md
+          echo "**Full Changelog**: https://github.com/r3dlobst3r/sdc/compare/$PREVIOUS_TAG...${{ needs.prepare.outputs.version }}" >> release_notes.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/saltyorg/sdc/pkg/logger"
+	"github.com/r3dlobst3r/sdc/pkg/logger"
 )
 
 func TestNewClient(t *testing.T) {

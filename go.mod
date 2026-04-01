@@ -1,4 +1,4 @@
-module github.com/saltyorg/sdc
+module github.com/r3dlobst3r/sdc
 
 go 1.25.3
 
